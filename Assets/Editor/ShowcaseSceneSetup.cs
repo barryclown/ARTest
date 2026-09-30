@@ -101,6 +101,8 @@ public static class ShowcaseSceneSetup
         BuildSteleFace();
         SetupAudio(game);
         SetupARFallback(game);
+        SetupTapAndOcclusion(game);
+        SetupSpawnAndAnchor(game);
         CleanupScene(ui, game);
 
         // 所有畫面上的字與執行時會出現的字，先烘進字型（原本的字型 atlas 已滿，新字會變方框）
@@ -1076,6 +1078,77 @@ public static class ShowcaseSceneSetup
         EditorUtility.SetDirty(fb);
     }
 
+    /// <summary>
+    /// 只套用 v1.5 之後新增的步驟（點擊判定、遮擋剪影、生怪方向、ARAnchor、畫面外箭頭）並補字，不重跑整套場景設定
+    /// </summary>
+    [MenuItem("Tools/AR Base/Apply Incremental Setup")]
+    public static void ApplyIncremental()
+    {
+        regular = EnsureUiFont(FontDir + "NotoSansTC-Regular.ttf", FontDir + "UI/NotoSansTC-Regular UI.asset");
+        bold = EnsureUiFont(FontDir + "Extra/NotoSansTC-Bold.ttf", FontDir + "UI/NotoSansTC-Bold UI.asset");
+
+        var scene = EditorSceneManager.OpenScene(ScenePath, OpenSceneMode.Single);
+        var game = Object.FindObjectOfType<SinglePlacementManager>(true);
+        SetupTapAndOcclusion(game);
+        SetupSpawnAndAnchor(game);
+        BakeGlyphs();
+        EditorSceneManager.MarkSceneDirty(scene);
+        EditorSceneManager.SaveScene(scene);
+        ConfigurePlayer();
+        AssetDatabase.SaveAssets();
+        Debug.Log("[ShowcaseSceneSetup] incremental setup done");
+    }
+
+    // 生怪改成以玩家位置為準（前方扇形，後半場加入兩側，不從背後出現）；
+    // AR 模式放神碑時掛 ARAnchor（要 XR Origin 上有 ARAnchorManager）；畫面外的萬年龜在邊緣顯示箭頭
+    static void SetupSpawnAndAnchor(SinglePlacementManager game)
+    {
+        game.SpawnRadius = 3.5f;
+        game.frontArc = new Vector2(8f, 30f);
+        game.sideArc = new Vector2(45f, 100f);
+        game.sideUnlockAt = 0.35f;
+        game.sideChance = 0.4f;
+        game.minSpawnSeparation = 14f;
+
+        // ARAnchorManager 必須和 XR Origin 在同一個物件上，平面管理器也掛在那裡
+        var planes = Object.FindObjectOfType<UnityEngine.XR.ARFoundation.ARPlaneManager>(true);
+        if (planes != null && planes.GetComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>() == null)
+            planes.gameObject.AddComponent<UnityEngine.XR.ARFoundation.ARAnchorManager>();
+
+        if (game.GetComponent<OffscreenIndicators>() == null)
+            game.gameObject.AddComponent<OffscreenIndicators>();
+        EditorUtility.SetDirty(game);
+    }
+
+    // 點擊改由 EnemyTapInput 判定（射線穿過神碑＋點不準時找最近的一隻）；
+    // 萬年龜走到神碑後面時，透過神碑畫出剪影
+    static void SetupTapAndOcclusion(SinglePlacementManager game)
+    {
+        if (game.GetComponent<EnemyTapInput>() == null)
+            game.gameObject.AddComponent<EnemyTapInput>();
+
+        game.steleOcclusionMask = EnsureShaderMaterial("SteleOcclusionMask.mat", "ARBase/SteleOcclusionMask");
+        game.occludedSilhouette = EnsureShaderMaterial("OccludedSilhouette.mat", "ARBase/OccludedSilhouette");
+        game.occludedSilhouette.SetColor("_XrayColor", new Color(0.55f, 0.92f, 1f, 0.75f));
+        EditorUtility.SetDirty(game.occludedSilhouette);
+        EditorUtility.SetDirty(game);
+    }
+
+    static Material EnsureShaderMaterial(string name, string shaderName)
+    {
+        string path = MatDir + name;
+        Shader shader = Shader.Find(shaderName);
+        var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+        if (mat == null)
+        {
+            mat = new Material(shader);
+            AssetDatabase.CreateAsset(mat, path);
+        }
+        mat.shader = shader;
+        EditorUtility.SetDirty(mat);
+        return mat;
+    }
+
     static void SetupAudio(SinglePlacementManager game)
     {
         GameAudio audio = game.GetComponent<GameAudio>() ?? game.gameObject.AddComponent<GameAudio>();
@@ -1127,8 +1200,8 @@ public static class ShowcaseSceneSetup
         PlayerSettings.productName = "守護神碑";
         PlayerSettings.companyName = "barryclown";
         PlayerSettings.SetApplicationIdentifier(BuildTargetGroup.Android, "com.barryclown.guardianstele");
-        PlayerSettings.bundleVersion = "1.4";
-        PlayerSettings.Android.bundleVersionCode = 5;
+        PlayerSettings.bundleVersion = "1.6";
+        PlayerSettings.Android.bundleVersionCode = 7;
         PlayerSettings.SplashScreen.backgroundColor = Navy;
         PlayerSettings.SplashScreen.unityLogoStyle = PlayerSettings.SplashScreen.UnityLogoStyle.LightOnDark;
 

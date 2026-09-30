@@ -60,6 +60,11 @@ public class EnemyController : MonoBehaviour
     private Quaternion bodyRestRot;
     private Quaternion headRest;
     private Quaternion[] legRest = new Quaternion[0];
+    private Renderer[] silhouetteParts = new Renderer[0];
+    private MaterialPropertyBlock silhouetteBlock;
+
+    private static readonly int XrayColorId = Shader.PropertyToID("_XrayColor");
+    private static readonly Color SelectedSilhouetteColor = new Color(1f, 0.8f, 0.35f, 0.85f);
 
     private void Awake()
     {
@@ -177,12 +182,50 @@ public class EnemyController : MonoBehaviour
         }
     }
 
-    // 手機點一下 / 滑鼠點一下
-    private void OnMouseDown()
+    /// <summary>
+    /// 在殼、頭、四肢等零件後面多疊一層剪影材質：走到神碑後面時透過神碑看得到（選取框與關閉的零件不加）
+    /// </summary>
+    public void AddOccludedSilhouette(Material silhouette)
     {
-        HandleTap();
+        if (silhouette == null)
+            return;
+
+        var parts = new List<Renderer>();
+        foreach (MeshRenderer r in GetComponentsInChildren<MeshRenderer>(true))
+        {
+            if (!r.enabled || (selectPlane != null && r.transform.IsChildOf(selectPlane.transform)))
+                continue;
+            Material[] mats = r.sharedMaterials;
+            if (System.Array.IndexOf(mats, silhouette) >= 0)
+                continue;
+            System.Array.Resize(ref mats, mats.Length + 1);
+            mats[mats.Length - 1] = silhouette;
+            r.sharedMaterials = mats;
+            parts.Add(r);
+        }
+        silhouetteParts = parts.ToArray();
     }
 
+    // 選取後剪影改成金色，跟腳下的選取光圈一致
+    private void SetSilhouetteSelected(bool selected)
+    {
+        if (silhouetteParts.Length == 0)
+            return;
+
+        silhouetteBlock ??= new MaterialPropertyBlock();
+        foreach (Renderer r in silhouetteParts)
+        {
+            if (r == null) continue;
+            r.GetPropertyBlock(silhouetteBlock);
+            if (selected)
+                silhouetteBlock.SetColor(XrayColorId, SelectedSilhouetteColor);
+            else
+                silhouetteBlock.Clear();
+            r.SetPropertyBlock(silhouetteBlock);
+        }
+    }
+
+    /// <summary>點擊由 EnemyTapInput 判定後呼叫</summary>
     public void HandleTap()
     {
         if (isDying)
@@ -200,6 +243,7 @@ public class EnemyController : MonoBehaviour
 
             if (selectPlane != null)
                 selectPlane.SetActive(true);
+            SetSilhouetteSelected(true);
         }
         else
         {

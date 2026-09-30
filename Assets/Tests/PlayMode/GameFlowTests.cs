@@ -312,6 +312,301 @@ public class GameFlowTests
     }
 
     [UnityTest]
+    public IEnumerator TurtleBehindSteleShowsSilhouetteAndCanBeTapped()
+    {
+        // 朋友實機回報：萬年龜走到神碑後面會被擋住、點不到
+        ui.NextIntro();
+        ui.NextIntro();
+        game.spawnInterval = game.spawnIntervalEnd = 999f;   // 開局那一波之後不再自動生怪，只留測試擺的萬年龜
+        game.PlaceBaseAt(TestStage.BasePosition, Quaternion.identity);
+        yield return null;
+        foreach (EnemyController e in EnemyController.Active.ToArray())
+        {
+            e.gameObject.SetActive(false);
+            Object.Destroy(e.gameObject);
+        }
+        yield return new WaitForSeconds(0.8f);   // 等神碑彈出、轉向鏡頭
+
+        EnemyTapInput tapInput = Object.FindObjectOfType<EnemyTapInput>();
+        Assert.NotNull(tapInput, "GameManager 要有 EnemyTapInput");
+        Assert.NotNull(game.steleOcclusionMask, "缺神碑遮擋標記材質");
+        Assert.NotNull(game.occludedSilhouette, "缺萬年龜剪影材質");
+        foreach (MeshRenderer r in game.BaseTransform.GetComponentsInChildren<MeshRenderer>().Where(r => r.enabled))
+            Assert.Contains(game.steleOcclusionMask, r.sharedMaterials, r.name + " 缺遮擋標記");
+
+        Camera cam = Camera.main;
+        Bounds stele = game.BaseTransform.GetComponentsInChildren<MeshRenderer>().Where(r => r.enabled)
+            .Select(r => r.bounds).Aggregate((a, b) => { a.Encapsulate(b); return a; });
+        Debug.Log($"[Occlusion] stele bounds size {stele.size}, center {stele.center}");
+
+        // 擺一隻潮龜在神碑正後方（鏡頭 → 神碑的延長線上），停在原地
+        Vector3 away = game.BaseTransform.position - cam.transform.position;
+        away.y = 0f;
+        away.Normalize();
+        var tide = game.enemyTypes.First(t => t.displayName == "潮龜");
+        EnemyController hidden = game.SpawnEnemy(tide, TestStage.BasePosition + away * 0.55f, Quaternion.LookRotation(-away));
+        hidden.speed = 0f;
+        yield return new WaitForSeconds(0.5f);
+
+        Vector3 shell = hidden.MainRenderer.bounds.center;
+        Vector2 screen = cam.WorldToScreenPoint(shell);
+        Assert.IsTrue(Physics.Raycast(cam.ScreenPointToRay(screen), out RaycastHit hit, 100f, ~0, QueryTriggerInteraction.Collide));
+        Assert.IsNull(hit.collider.GetComponentInParent<EnemyController>(), "前提：這隻萬年龜要被神碑擋住（射線先打到 " + hit.collider.name + "）");
+        Assert.Contains(game.occludedSilhouette, hidden.MainRenderer.sharedMaterials, "萬年龜要疊剪影材質");
+        Assert.IsFalse(hidden.selectPlane.GetComponent<MeshRenderer>().sharedMaterials.Contains(game.occludedSilhouette), "選取光圈不加剪影");
+        yield return TestShots.Capture("11_behind_stele");
+
+        // 點神碑上萬年龜所在的位置：第一下選取、第二下擊退
+        Assert.AreEqual(hidden, tapInput.Tap(screen), "點神碑擋住的位置應點到後面的萬年龜");
+        Assert.IsTrue(hidden.IsSelected);
+        yield return TestShots.Capture("12_behind_stele_selected");
+        tapInput.Tap(screen);
+        yield return new WaitForSeconds(0.3f);
+        Assert.IsTrue(hidden == null, "第二下應擊退");
+        Assert.AreEqual(1, ui.KillCount);
+
+        // 沒點正中但很接近：算點到；離很遠：不算
+        EnemyController open = game.SpawnEnemy(tide, TestStage.BasePosition + Vector3.Cross(Vector3.up, away) * 1.2f, Quaternion.identity);
+        open.speed = 0f;
+        yield return new WaitForSeconds(0.4f);
+        Vector2 openScreen = cam.WorldToScreenPoint(open.MainRenderer.bounds.center);
+        float shortSide = Mathf.Min(cam.pixelWidth, cam.pixelHeight);
+        Rect openRect = ScreenRect(cam, open.MainRenderer.bounds);
+        Vector2 near = new Vector2(openRect.xMax + tapInput.assistRadius * shortSide * 0.5f, openScreen.y);
+        Vector2 far = new Vector2(openRect.xMax + tapInput.assistRadius * shortSide * 2.5f, openScreen.y);
+        Assert.IsNull(tapInput.Pick(far), "離萬年龜很遠的點擊不應算數");
+        Assert.AreEqual(open, tapInput.Tap(near), "點在萬年龜旁邊一點點應算點到");
+        Assert.IsTrue(open.IsSelected);
+        AssertNoGameErrors();
+    }
+
+    [UnityTest]
+    public IEnumerator SteleFacesPlayerOnceAndStaysPut()
+    {
+        // 朋友回報神碑「一直在移動」：改成放下時對準玩家一次，之後玩家怎麼走神碑都不動；再玩一次時重新對準
+        ui.NextIntro();
+        ui.NextIntro();
+        game.spawnInterval = game.spawnIntervalEnd = 999f;
+        game.PlaceBaseAt(TestStage.BasePosition, Quaternion.identity);
+        yield return null;
+        ClearTurtles();
+        yield return new WaitForSeconds(0.6f);   // 等彈出動畫結束
+
+        Transform stele = game.BaseTransform;
+        Camera cam = Camera.main;
+        Assert.NotNull(game.BaseRoot, "神碑要放在貼地的 BaseRoot 底下");
+        Assert.AreEqual(game.BaseRoot, stele.parent, "神碑的父物件應是 BaseRoot");
+        Assert.AreEqual(game.BaseRoot, GameObject.Find("BaseAura(Clone)").transform.parent, "結界也在 BaseRoot 底下，AR 錨點修正時一起移動");
+        Assert.AreEqual(TestStage.BasePosition.y, game.BaseRoot.position.y, 0.001f, "BaseRoot 貼在地面上");
+        Assert.IsNull(game.BaseRoot.GetComponent<ARAnchor>(), "沒有 AR（測試）時不掛 ARAnchor");
+        Assert.Less(FacingError(stele, cam), 3f, "放下時應正對玩家");
+
+        Vector3 pivot0 = stele.position;
+        Vector3 visual0 = VisualCenter(stele);
+        Quaternion rot0 = stele.rotation;
+        float maxPivotMove = 0f, maxVisualMove = 0f, maxTurn = 0f;
+
+        // 鏡頭繞神碑一圈（半徑 2 公尺、高 1.4 公尺）：神碑不跟著轉、也不移動
+        for (int deg = 0; deg <= 360; deg += 45)
+        {
+            float rad = deg * Mathf.Deg2Rad;
+            cam.transform.position = pivot0 + new Vector3(Mathf.Sin(rad), 0f, -Mathf.Cos(rad)) * 2f + Vector3.up * 1.4f;
+            cam.transform.LookAt(pivot0);
+            yield return new WaitForSeconds(0.4f);
+
+            maxPivotMove = Mathf.Max(maxPivotMove, Vector3.Distance(stele.position, pivot0));
+            Vector3 v = VisualCenter(stele) - visual0;
+            v.y = 0f;
+            maxVisualMove = Mathf.Max(maxVisualMove, v.magnitude);
+            maxTurn = Mathf.Max(maxTurn, Quaternion.Angle(rot0, stele.rotation));
+        }
+        Debug.Log($"[SteleStay] pivot moved {maxPivotMove:F4} m, visual moved {maxVisualMove:F4} m, turned {maxTurn:F3} deg");
+        Assert.Less(maxPivotMove, 0.001f, "玩家移動時神碑座標不應改變");
+        Assert.Less(maxVisualMove, 0.001f, "玩家移動時神碑外觀不應移動");
+        Assert.Less(maxTurn, 0.01f, "放下後神碑不應再跟著玩家轉");
+
+        // 再玩一次：玩家換了位置，神碑重新對準玩家
+        cam.transform.position = pivot0 + new Vector3(2f, 1.4f, 0.5f);
+        cam.transform.LookAt(pivot0);
+        game.Retry();
+        yield return null;
+        Assert.Less(FacingError(stele, cam), 3f, "再玩一次時應重新對準玩家");
+        Assert.AreEqual(pivot0.x, stele.position.x, 0.001f);
+        Assert.AreEqual(pivot0.z, stele.position.z, 0.001f);
+        AssertNoGameErrors();
+    }
+
+    [UnityTest]
+    public IEnumerator SpawnsFollowPlayerAndNeverComeFromBehind()
+    {
+        // 朋友坐著玩，側面和背後來的萬年龜看不到：改成依玩家位置生怪，前半場只從神碑後方扇形來，後半場加入兩側
+        ui.NextIntro();
+        ui.NextIntro();
+        game.spawnInterval = game.spawnIntervalEnd = 999f;
+        game.PlaceBaseAt(TestStage.BasePosition, Quaternion.identity);
+        yield return null;
+        ClearTurtles();
+        Camera cam = Camera.main;
+        MethodInfo spawnWave = typeof(SinglePlacementManager).GetMethod("SpawnWave", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        List<float> Angles()
+        {
+            Vector3 away = game.SpawnAxis();
+            return EnemyController.Active.Select(e =>
+            {
+                Vector3 d = e.transform.position - game.BaseRoot.position;
+                d.y = 0f;
+                return Vector3.SignedAngle(away, d, Vector3.up);
+            }).ToList();
+        }
+
+        // 1. 前半場：全部在前方扇形內，距離等於生成半徑，身體朝向神碑
+        for (int i = 0; i < 12; i++)
+            spawnWave.Invoke(game, new object[] { 3 });
+        List<float> early = Angles();
+        Debug.Log("[Spawn] early angles: " + string.Join(", ", early.Select(a => a.ToString("F0"))));
+        Assert.AreEqual(36, early.Count);
+        Assert.IsTrue(early.All(a => Mathf.Abs(a) >= game.frontArc.x - 0.5f && Mathf.Abs(a) <= game.frontArc.y + 0.5f), "前半場應只從前方扇形出現");
+        Assert.IsTrue(early.Any(a => a < 0f) && early.Any(a => a > 0f), "左右兩邊都要有");
+        foreach (EnemyController e in EnemyController.Active)
+        {
+            Vector3 toBase = game.BaseRoot.position - e.transform.position;
+            toBase.y = 0f;
+            Assert.AreEqual(game.SpawnRadius, toBase.magnitude, 0.01f, "出生點離神碑應等於生成半徑");
+            Assert.Less(Vector3.Angle(-e.transform.right, toBase), 1f, "萬年龜應面向神碑走");
+        }
+        Assert.IsFalse(ui.toastText.text.Contains(UIManager.SideToast), "前半場不應跳兩側提示");
+        ClearTurtles();
+        yield return null;
+
+        // 2. 後半場：第一隻一定從側面來並跳提示；之後有前有側，最多 100 度，不會到玩家背後
+        // 先照實際順序讓 20% 解鎖的黑龜精登場過，否則它的登場提示會和兩側提示擠在同一波
+        SetPrivate(ui, "countdownTime", ui.TotalTime * 0.75f);
+        spawnWave.Invoke(game, new object[] { 1 });
+        ClearTurtles();
+        yield return null;
+        SetPrivate(ui, "countdownTime", ui.TotalTime * (1f - game.sideUnlockAt - 0.05f));
+        spawnWave.Invoke(game, new object[] { 1 });
+        float firstLate = Angles().Single();
+        Assert.GreaterOrEqual(Mathf.Abs(firstLate), game.sideArc.x - 0.5f, "兩側解鎖後第一隻應從側面來");
+        StringAssert.Contains(UIManager.SideToast, ui.toastText.text, "兩側解鎖時應跳提示字");
+        for (int i = 0; i < 20; i++)
+            spawnWave.Invoke(game, new object[] { 3 });
+        List<float> late = Angles();
+        Debug.Log("[Spawn] late angles: " + string.Join(", ", late.Select(a => a.ToString("F0"))));
+        Assert.IsTrue(late.Any(a => Mathf.Abs(a) >= game.sideArc.x - 0.5f), "後半場應有從側面來的");
+        Assert.IsTrue(late.Any(a => Mathf.Abs(a) <= game.frontArc.y + 0.5f), "後半場仍有從前方來的");
+        Assert.IsTrue(late.All(a => Mathf.Abs(a) <= game.sideArc.y + 0.5f), "不應超過兩側扇形");
+        foreach (EnemyController e in EnemyController.Active)
+        {
+            Vector3 fromCam = e.transform.position - cam.transform.position;
+            Vector3 camToBase = game.BaseRoot.position - cam.transform.position;
+            fromCam.y = camToBase.y = 0f;
+            Assert.Less(Vector3.Angle(camToBase, fromCam), 90f, "萬年龜不應出現在玩家背後");
+        }
+        ClearTurtles();
+        yield return null;
+
+        // 3. 玩家換位置：生怪方向跟著玩家走（以新位置為準仍在前方扇形）
+        SetPrivate(ui, "countdownTime", ui.TotalTime);
+        cam.transform.position = game.BaseRoot.position + new Vector3(2.5f, 1.5f, 1.5f);
+        cam.transform.LookAt(game.BaseRoot.position);
+        for (int i = 0; i < 6; i++)
+            spawnWave.Invoke(game, new object[] { 2 });
+        Assert.IsTrue(Angles().All(a => Mathf.Abs(a) <= game.frontArc.y + 0.5f), "玩家換位置後，生怪方向應以新位置為準");
+        AssertNoGameErrors();
+    }
+
+    [UnityTest]
+    public IEnumerator OffscreenTurtleShowsEdgeArrow()
+    {
+        ui.NextIntro();
+        ui.NextIntro();
+        game.spawnInterval = game.spawnIntervalEnd = 999f;
+        game.PlaceBaseAt(TestStage.BasePosition, Quaternion.identity);
+        yield return null;
+        ClearTurtles();
+        yield return new WaitForSeconds(0.5f);
+
+        OffscreenIndicators indicators = Object.FindObjectOfType<OffscreenIndicators>();
+        Assert.NotNull(indicators, "GameManager 要有 OffscreenIndicators");
+        Assert.NotNull(Object.FindObjectOfType<ARAnchorManager>(true), "XR Origin 要有 ARAnchorManager");
+        Camera cam = Camera.main;
+        var tide = game.enemyTypes.First(t => t.displayName == "潮龜");
+
+        // 畫面中間的萬年龜：不顯示箭頭
+        Vector3 axis = game.SpawnAxis();
+        EnemyController inView = game.SpawnEnemy(tide, game.BaseRoot.position + axis * 1.5f, Quaternion.identity);
+        inView.speed = 0f;
+        yield return null;
+        yield return null;
+        Assert.AreEqual(0, indicators.VisibleCount, "畫面內的萬年龜不應顯示箭頭");
+
+        // 右側畫面外：箭頭貼在畫面右緣、指向右邊
+        Vector3 right = Vector3.Cross(Vector3.up, axis);
+        // 依實際畫面比例往外推，直到確定在畫面外（批次模式的畫面大小不固定）
+        Vector3 OffScreen(float side)
+        {
+            Vector3 p = game.BaseRoot.position;
+            for (float lateral = 2f; lateral < 12f; lateral += 0.25f)
+            {
+                p = game.BaseRoot.position + right * (side * lateral);
+                float x = cam.WorldToViewportPoint(p + Vector3.up * 0.1f).x;
+                if (side > 0f ? x > 1.2f : x < -0.2f)
+                    break;
+            }
+            return p;
+        }
+        EnemyController offRight = game.SpawnEnemy(tide, OffScreen(1f), Quaternion.identity);
+        offRight.speed = 0f;
+        yield return new WaitForSeconds(0.3f);
+        Assert.Greater(cam.WorldToViewportPoint(offRight.MainRenderer.bounds.center).x, 1f, "前提：這隻要在畫面右側外面");
+        Assert.AreEqual(1, indicators.VisibleCount, "畫面外的萬年龜應顯示一個箭頭");
+        RectTransform arrow = indicators.GetArrow(0);
+        Assert.Greater(arrow.anchorMin.x, 0.8f, "箭頭應貼在畫面右緣");
+        Assert.Less(arrow.anchorMin.x, 1f, "箭頭應留在畫面內");
+        float z = arrow.localEulerAngles.z;
+        Assert.That(Mathf.DeltaAngle(z, -90f), Is.InRange(-45f, 45f), "箭頭應指向右邊（" + z + "）");
+
+        // 左側畫面外再一隻：兩個箭頭，一左一右
+        EnemyController offLeft = game.SpawnEnemy(tide, OffScreen(-1f), Quaternion.identity);
+        offLeft.speed = 0f;
+        yield return new WaitForSeconds(0.3f);
+        Assert.AreEqual(2, indicators.VisibleCount);
+        yield return TestShots.Capture("13_offscreen_arrows");
+
+        // 擊退後箭頭消失
+        offRight.Kill(true);
+        offLeft.Kill(true);
+        yield return new WaitForSeconds(0.3f);
+        Assert.AreEqual(0, indicators.VisibleCount, "擊退後箭頭應消失");
+        AssertNoGameErrors();
+    }
+
+    private void ClearTurtles()
+    {
+        foreach (EnemyController e in EnemyController.Active.ToArray())
+        {
+            e.gameObject.SetActive(false);
+            Object.Destroy(e.gameObject);
+        }
+    }
+
+    private static float FacingError(Transform stele, Camera cam)
+    {
+        Vector3 toCam = cam.transform.position - stele.position;
+        toCam.y = 0f;
+        return Vector3.Angle(-stele.forward, toCam);
+    }
+
+    private static Vector3 VisualCenter(Transform root)
+    {
+        Bounds b = root.GetComponentsInChildren<MeshRenderer>().Where(r => r.enabled)
+            .Select(r => r.bounds).Aggregate((a, c) => { a.Encapsulate(c); return a; });
+        return b.center;
+    }
+
+    [UnityTest]
     public IEnumerator FallbackModeWorksWithoutAR()
     {
         // 模擬「手機不支援 ARCore」：切到模擬場景，教學看完就在虛擬地面放神碑開局
@@ -356,6 +651,19 @@ public class GameFlowTests
         bool found = panel.GetComponentsInChildren<Button>(true).Any(b =>
             Enumerable.Range(0, b.onClick.GetPersistentEventCount()).Any(i => b.onClick.GetPersistentMethodName(i) == method));
         Assert.IsTrue(found, $"{panel.name} 缺少呼叫 {method} 的按鈕");
+    }
+
+    private static Rect ScreenRect(Camera cam, Bounds b)
+    {
+        Vector2 min = new Vector2(float.MaxValue, float.MaxValue), max = new Vector2(float.MinValue, float.MinValue);
+        for (int i = 0; i < 8; i++)
+        {
+            Vector3 corner = b.center + Vector3.Scale(b.extents, new Vector3((i & 1) == 0 ? -1 : 1, (i & 2) == 0 ? -1 : 1, (i & 4) == 0 ? -1 : 1));
+            Vector2 p = cam.WorldToScreenPoint(corner);
+            min = Vector2.Min(min, p);
+            max = Vector2.Max(max, p);
+        }
+        return Rect.MinMaxRect(min.x, min.y, max.x, max.y);
     }
 
     private static void ClickRetry(GameObject panel)

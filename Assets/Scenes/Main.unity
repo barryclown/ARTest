@@ -2256,6 +2256,8 @@ GameObject:
   - component: {fileID: 782628378}
   - component: {fileID: 782628379}
   - component: {fileID: 782628380}
+  - component: {fileID: 782628381}
+  - component: {fileID: 782628382}
   m_Layer: 0
   m_Name: GameManager
   m_TagString: Untagged
@@ -2331,13 +2333,20 @@ MonoBehaviour:
   spawnIntervalEnd: 3
   waveSizeStart: {x: 1, y: 2}
   waveSizeEnd: {x: 2, y: 3}
-  SpawnRadius: 5
+  SpawnRadius: 3.5
+  frontArc: {x: 8, y: 30}
+  sideArc: {x: 45, y: 100}
+  sideUnlockAt: 0.35
+  sideChance: 0.4
+  minSpawnSeparation: 14
   minScale: 0.92
   maxScale: 1.08
   killEffectPrefab: {fileID: 1831454246255012725, guid: 3dfa4f44f83eb0744a980a083963adfb, type: 3}
   baseShakeAmount: 0.03
   baseShakeDuration: 0.25
   vibrateOnHit: 1
+  steleOcclusionMask: {fileID: 2100000, guid: 93680351d22ab814a9da58cce9d37c17, type: 2}
+  occludedSilhouette: {fileID: 2100000, guid: 388c5ae485035ff4896288b9373df397, type: 2}
 --- !u!114 &782628379
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2379,6 +2388,36 @@ MonoBehaviour:
   backgroundColor: {r: 0.12, g: 0.15, b: 0.19, a: 1}
   baseDistance: 3
   cameraHeight: 1.4
+--- !u!114 &782628381
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 782628375}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f7343d546f2085f4bb14f8b9acdec2e0, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  assistRadius: 0.06
+--- !u!114 &782628382
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 782628375}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 496bcbf1978b024458a3fe972007fdb3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  color: {r: 1, g: 0.82, b: 0.4, a: 0.95}
+  arrowSize: 0.085
+  edgeMargin: 0.07
+  topReserved: 0.14
+  dangerDistance: 1.2
 --- !u!1 &811629870
 GameObject:
   m_ObjectHideFlags: 0
@@ -5700,6 +5739,7 @@ GameObject:
   - component: {fileID: 1828601338}
   - component: {fileID: 1828601337}
   - component: {fileID: 1828601336}
+  - component: {fileID: 1828601341}
   m_Layer: 0
   m_Name: XR Origin (XR Rig)
   m_TagString: Untagged
@@ -5780,6 +5820,19 @@ Transform:
   - {fileID: 40919615}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1828601341
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1828601335}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 728ad7fae8e460a4ba41265c7308d757, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_AnchorPrefab: {fileID: 0}
 --- !u!1 &1843117260
 GameObject:
   m_ObjectHideFlags: 0
