@@ -96,7 +96,7 @@ public class DemoRecording
 
             // ── 第一局：守住 60 秒（中間故意漏兩隻，展示受擊回饋）
             botActive = true;
-            recorder.StartCoroutine(BotLoop(letThroughWindows: new[] { new Vector2(17f, 21f), new Vector2(37f, 40f) }));
+            recorder.StartCoroutine(BotLoop(letThroughWindows: new[] { new Vector2(17f, 24f), new Vector2(37f, 44f) }));
             yield return WaitUntilOrTimeout(() => ui.winPanel.activeSelf || ui.losePanel.activeSelf, 75f);
             botActive = false;
             Assert.IsTrue(ui.winPanel.activeSelf, "示範的第一局應該守住（bot 沒擋好）");
@@ -268,12 +268,12 @@ public class DemoRecording
             if (!windowOpen)
                 letThrough = null;
             else if (letThrough == null || letThrough.IsDying)
-                letThrough = PickTarget(null);
+                letThrough = PickTarget(null, float.MaxValue);
 
             bool stopped = stopWhen != null && stopWhen();
             if (!stopped && !botBusy)
             {
-                EnemyController target = PickTarget(letThrough);
+                EnemyController target = PickTarget(letThrough, EngageDistance);
                 if (target != null)
                     yield return TapEnemyTwice(target);
             }
@@ -281,12 +281,15 @@ public class DemoRecording
         }
     }
 
-    private EnemyController PickTarget(EnemyController exclude)
+    // 萬年龜走到離神碑這麼近才出手（出生半徑 3.5 公尺），畫面上先看得到牠們走一段
+    const float EngageDistance = 2.3f;
+
+    private EnemyController PickTarget(EnemyController exclude, float maxDistance)
     {
         Vector3 basePos = game.BaseTransform != null ? game.BaseTransform.position : TestStage.BasePosition;
         return EnemyController.Active
             .Where(e => e != null && e != exclude && !e.IsDying && OnScreen(e))
-            .Where(e => HorizontalDistance(e.transform.position, basePos) < 3.2f)
+            .Where(e => HorizontalDistance(e.transform.position, basePos) < maxDistance)
             .OrderBy(e => HorizontalDistance(e.transform.position, basePos))
             .FirstOrDefault();
     }

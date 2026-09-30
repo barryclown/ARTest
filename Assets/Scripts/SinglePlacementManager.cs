@@ -58,8 +58,20 @@ public class SinglePlacementManager : MonoBehaviour
     public Vector2Int waveSizeStart = new Vector2Int(1, 2);
     [Tooltip("倒數結束前每波隻數（最少, 最多）")]
     public Vector2Int waveSizeEnd = new Vector2Int(2, 3);
-    [Tooltip("怪物生成半徑")]
-    public float SpawnRadius = 5f;
+    [Tooltip("怪物生成半徑（離神碑幾公尺）")]
+    public float SpawnRadius = 3.5f;
+
+    [Header("Spawn Directions")]
+    [Tooltip("前方扇形：以「玩家 → 神碑」的延長線為 0 度，從神碑後方左右幾度內出生（最小, 最大）；整段路都在畫面裡")]
+    public Vector2 frontArc = new Vector2(8f, 30f);
+    [Tooltip("兩側：左右幾度（最小, 最大）；超過 90 度代表稍微靠玩家這一側，但不會到玩家背後")]
+    public Vector2 sideArc = new Vector2(45f, 100f);
+    [Tooltip("經過多少比例的時間後，萬年龜也會從兩側出現")]
+    [Range(0f, 1f)] public float sideUnlockAt = 0.35f;
+    [Tooltip("兩側解鎖後，每隻從兩側出現的機率")]
+    [Range(0f, 1f)] public float sideChance = 0.4f;
+    [Tooltip("同一波的萬年龜之間至少相隔幾度")]
+    public float minSpawnSeparation = 14f;
 
     [Header("Enemy Random Size")]
     [Tooltip("相對 prefab 的縮放倍率（範圍小，同一種萬年龜才認得出來）")]
@@ -75,47 +87,40 @@ public class SinglePlacementManager : MonoBehaviour
     [Tooltip("神碑受擊時手機震動")]
     public bool vibrateOnHit = true;
 
+    [Header("Occlusion")]
+    [Tooltip("疊在神碑上，標出神碑擋住的畫面範圍")]
+    public Material steleOcclusionMask;
+    [Tooltip("疊在萬年龜上，走到神碑後面時透過神碑畫出剪影")]
+    public Material occludedSilhouette;
+
     public bool IsRunning => gameRunning;
     public bool IsPlaced => isPlaced;
     public Transform BaseTransform => placedObject != null ? placedObject.transform : null;
 
+    /// <summary>神碑與結界的共同父物件，放在地面上；AR 模式會掛 ARAnchor，讓它跟著真實地板</summary>
+    public Transform BaseRoot => baseRoot;
+
     private ARPlaneManager arPlaneManager;
+    private ARAnchorManager arAnchorManager;
     private Camera arCamera;
+    private Transform baseRoot;
     private GameObject placedObject;
     private GameObject aura;
     private Material auraMaterial;
     private Coroutine auraPunch;
-    private float groundY;
     private ARPlane pendingPlane;
     private bool virtualGround;
     private Vector3 virtualBasePosition;
     private Coroutine spawnCoroutine;
     private Coroutine shakeCoroutine;
-    private Vector3 baseRestPosition;
+    private Vector3 steleRestLocal;
     private bool isPlaced;
     private bool gameRunning;
+    private bool sidesIntroduced;
 
-    // 上一次使用的生成方向 (0~3)，避免連續同邊
-    private int lastSpawnIndex = -1;
-    private readonly int[] spawnOrder = new int[4];
+    private const int MaxWaveSize = 4;
+    private readonly System.Collections.Generic.List<float> waveAngles = new System.Collections.Generic.List<float>(MaxWaveSize);
     private readonly System.Collections.Generic.HashSet<EnemyType> introducedTypes = new System.Collections.Generic.HashSet<EnemyType>();
-
-    // 固定四個方向：左、右、前、後（單位向量）
-    private static readonly Vector3[] SpawnOffsetDirs =
-    {
-        new Vector3(-1f, 0f,  0f), // 0: -X
-        new Vector3( 1f, 0f,  0f), // 1: +X
-        new Vector3( 0f, 0f,  1f), // 2: +Z
-        new Vector3( 0f, 0f, -1f)  // 3: -Z
-    };
-
-    private static readonly float[] SpawnYRotations =
-    {
-        180f, // -X
-        0f,   // +X
-        -90f, // +Z
-        90f   // -Z
-    };
 
     // 在 Inspector 調整數值時就先把範圍整理好，Spawn 時不用每次再算
     private void OnValidate()
@@ -148,7 +153,7 @@ public class SinglePlacementManager : MonoBehaviour
 
     private static Vector2Int ClampWave(Vector2Int wave)
     {
-        int max = SpawnOffsetDirs.Length;
+        int max = MaxWaveSize;
         int lo = Mathf.Clamp(wave.x, 0, max);
         int hi = Mathf.Clamp(wave.y, lo, max);
         return new Vector2Int(lo, hi);
@@ -158,6 +163,7 @@ public class SinglePlacementManager : MonoBehaviour
     {
         instance = this;
         arPlaneManager = FindObjectOfType<ARPlaneManager>();
+        arAnchorManager = FindObjectOfType<ARAnchorManager>();
         arCamera = Camera.main;
     }
 
@@ -283,16 +289,24 @@ public class SinglePlacementManager : MonoBehaviour
             return;
 
         isPlaced = true;
-        groundY = position.y;
-        placedObject = Instantiate(placementPrefab, position, rotation);
+
+        // 神碑與結界都放在同一個貼地的父物件下；AR 修正地圖時整組一起跟著真實地板
+        baseRoot = new GameObject("BaseRoot").transform;
+        baseRoot.SetPositionAndRotation(position, Quaternion.identity);
+
+        placedObject = Instantiate(placementPrefab, baseRoot);
+        placedObject.transform.localPosition = Vector3.zero;
+        placedObject.transform.rotation = FacingCamera(position, rotation);
         placedObject.transform.localScale = placedScale;
-        baseRestPosition = position + Vector3.up * (snapBaseToGround ? GroundOffset(placedObject, groundY) : 0f);
-        placedObject.transform.position = baseRestPosition;
+        steleRestLocal = Vector3.up * (snapBaseToGround ? GroundOffset(placedObject, position.y) : 0f);
+        placedObject.transform.localPosition = steleRestLocal;
         StartCoroutine(PopIn(placedObject.transform, placedScale, appearDuration));
+        AddOcclusionMask(placedObject);
 
         SpawnAura();
-        SpawnKillEffect(baseRestPosition);
+        SpawnKillEffect(placedObject.transform.position);
         GameAudio.Play(GameAudio.Sfx.Appear);
+        AnchorBase();
 
         // 停用平面偵測以省效能
         if (arPlaneManager != null)
@@ -303,6 +317,30 @@ public class SinglePlacementManager : MonoBehaviour
         }
 
         StartGame();
+    }
+
+    // 神碑放下時轉向玩家一次，之後不再跟著轉（跟著轉會讓人覺得神碑在動）
+    private Quaternion FacingCamera(Vector3 position, Quaternion fallback)
+    {
+        if (arCamera == null)
+            return fallback;
+
+        Vector3 dir = arCamera.transform.position - position;
+        dir.y = 0f;
+        return dir.sqrMagnitude > 0.0001f ? Quaternion.LookRotation(-dir, Vector3.up) : fallback;
+    }
+
+    // 只有 AR 追蹤中才掛 ARAnchor（模擬場景與自動測試沒有 AR，維持原樣）
+    private void AnchorBase()
+    {
+        if (virtualGround || baseRoot == null || arAnchorManager == null || !arAnchorManager.enabled)
+            return;
+        if (arAnchorManager.subsystem == null || !arAnchorManager.subsystem.running)
+            return;
+
+        ARAnchor anchor = baseRoot.gameObject.AddComponent<ARAnchor>();
+        // AR 系統移除錨點時不要連神碑一起刪掉，神碑停在最後的位置繼續玩
+        anchor.destroyOnRemoval = false;
     }
 
     // 模型底部到地面的距離
@@ -321,12 +359,31 @@ public class SinglePlacementManager : MonoBehaviour
         return found ? ground - minY : 0f;
     }
 
+    // 神碑看得到的零件多疊一層遮擋標記（萬年龜剪影只畫在這些地方）
+    private void AddOcclusionMask(GameObject stele)
+    {
+        if (steleOcclusionMask == null)
+            return;
+
+        foreach (MeshRenderer r in stele.GetComponentsInChildren<MeshRenderer>())
+        {
+            if (!r.enabled || r.GetComponent<TMPro.TMP_Text>() != null)
+                continue;
+            Material[] mats = r.sharedMaterials;
+            System.Array.Resize(ref mats, mats.Length + 1);
+            mats[mats.Length - 1] = steleOcclusionMask;
+            r.sharedMaterials = mats;
+        }
+    }
+
     private void SpawnAura()
     {
         if (baseAuraPrefab == null)
             return;
 
-        aura = Instantiate(baseAuraPrefab, new Vector3(baseRestPosition.x, groundY + 0.01f, baseRestPosition.z), Quaternion.identity);
+        aura = Instantiate(baseAuraPrefab, baseRoot);
+        aura.transform.localPosition = Vector3.up * 0.01f;
+        aura.transform.localRotation = Quaternion.identity;
         aura.transform.localScale = Vector3.one * auraSize;
         Renderer r = aura.GetComponentInChildren<Renderer>();
         if (r != null)
@@ -375,7 +432,7 @@ public class SinglePlacementManager : MonoBehaviour
     private void StartGame()
     {
         ClearEnemies();
-        lastSpawnIndex = -1;
+        sidesIntroduced = false;
         gameRunning = true;
 
         // 開局就有的種類不另外提示；之後解鎖的，第一次出現時跳提示字
@@ -406,7 +463,9 @@ public class SinglePlacementManager : MonoBehaviour
         }
 
         StopBaseShake();
-        placedObject.transform.position = baseRestPosition;
+        // 玩家可能換了位置：重新彈出時再對準玩家一次
+        placedObject.transform.localPosition = steleRestLocal;
+        placedObject.transform.rotation = FacingCamera(placedObject.transform.position, placedObject.transform.rotation);
         StartCoroutine(PopIn(placedObject.transform, placedScale, appearDuration));
         GameAudio.Play(GameAudio.Sfx.Appear);
         StartGame();
@@ -506,25 +565,54 @@ public class SinglePlacementManager : MonoBehaviour
 
     private void SpawnWave(int count)
     {
-        int dirCount = SpawnOffsetDirs.Length;
-        count = Mathf.Clamp(count, 0, dirCount);
+        count = Mathf.Clamp(count, 0, MaxWaveSize);
+        float progress = UIManager.instance != null ? UIManager.instance.Progress01 : 0f;
+        bool sidesOpen = progress >= sideUnlockAt - 0.0001f;
 
-        // 同一波各走不同方向，且不接著上一隻的方向，避免疊在一起
-        for (int i = 0; i < dirCount; i++)
-            spawnOrder[i] = i;
-        for (int i = dirCount - 1; i > 0; i--)
-        {
-            int j = Random.Range(0, i + 1);
-            (spawnOrder[i], spawnOrder[j]) = (spawnOrder[j], spawnOrder[i]);
-        }
-        if (dirCount > 1 && spawnOrder[0] == lastSpawnIndex)
-            (spawnOrder[0], spawnOrder[dirCount - 1]) = (spawnOrder[dirCount - 1], spawnOrder[0]);
-
+        // 同一波左右交替，並互相隔開，避免疊在一起
+        waveAngles.Clear();
+        float sign = Random.value < 0.5f ? -1f : 1f;
         for (int i = 0; i < count; i++)
-            SpawnRandomObject(spawnOrder[i]);
+        {
+            bool side = sidesOpen && (!sidesIntroduced || Random.value < sideChance);
+            if (side && !sidesIntroduced)
+            {
+                // 兩側剛解鎖：這一隻一定從側面來並跳提示字，玩家才知道規則變了
+                sidesIntroduced = true;
+                if (UIManager.instance != null)
+                    UIManager.instance.ShowToast($"{UIManager.SideToast}\n<size=58%>{UIManager.SideToastSub}</size>", 1.8f);
+            }
 
-        if (count > 0)
-            lastSpawnIndex = spawnOrder[count - 1];
+            float angle = PickSpawnAngle(side ? sideArc : frontArc, sign);
+            waveAngles.Add(angle);
+            sign = -sign;
+            SpawnRandomObject(angle);
+        }
+    }
+
+    // 在扇形範圍內挑一個角度（正負號決定左右），和同一波已用掉的角度至少隔 minSpawnSeparation
+    private float PickSpawnAngle(Vector2 arc, float sign)
+    {
+        float angle = sign * Random.Range(arc.x, arc.y);
+        for (int attempt = 1; attempt < 8 && waveAngles.Any(a => Mathf.Abs(a - angle) < minSpawnSeparation); attempt++)
+        {
+            if (attempt == 4)
+                sign = -sign;   // 這一邊擠不下就換另一邊
+            angle = sign * Random.Range(arc.x, arc.y);
+        }
+        return angle;
+    }
+
+    /// <summary>
+    /// 生怪的基準方向（0 度）：從玩家往神碑看過去、神碑後方那一側。
+    /// 每一波都依玩家當下的位置重新算，所以萬年龜一定從玩家面前或兩側來，不會從背後出現。
+    /// </summary>
+    public Vector3 SpawnAxis()
+    {
+        Vector3 basePos = baseRoot != null ? baseRoot.position : Vector3.zero;
+        Vector3 away = arCamera != null ? basePos - arCamera.transform.position : Vector3.forward;
+        away.y = 0f;
+        return away.sqrMagnitude > 0.0001f ? away.normalized : Vector3.forward;
     }
 
     /// <summary>依經過時間與權重挑一種已解鎖的萬年龜</summary>
@@ -559,7 +647,7 @@ public class SinglePlacementManager : MonoBehaviour
     private static bool IsAvailable(EnemyType type, float progress)
         => type != null && type.prefab != null && type.weight > 0f && type.unlockAt <= progress + 0.0001f;
 
-    private void SpawnRandomObject(int index)
+    private void SpawnRandomObject(float angle)
     {
         if (!gameRunning || placedObject == null)
             return;
@@ -567,7 +655,6 @@ public class SinglePlacementManager : MonoBehaviour
         EnemyType type = PickType();
         if (type == null)
             return;
-        GameObject prefabToSpawn = type.prefab;
 
         if (!introducedTypes.Contains(type))
         {
@@ -576,15 +663,29 @@ public class SinglePlacementManager : MonoBehaviour
                 UIManager.instance.ShowToast($"{string.Format(UIManager.NewEnemyToastFormat, type.displayName)}\n<size=58%>{type.intro}</size>", 1.8f);
         }
 
-        float d = SpawnRadius > 0f ? SpawnRadius : 5f;
+        float d = SpawnRadius > 0f ? SpawnRadius : 3.5f;
+        Vector3 away = SpawnAxis();
+        Vector3 dir = Quaternion.Euler(0f, angle, 0f) * away;
 
-        Vector3 spawnPosition = baseRestPosition + SpawnOffsetDirs[index] * d;
-        spawnPosition.y = groundY;
+        // 玩家貼著神碑站時，靠玩家那一側的角度可能繞到玩家身後，收回到側面
+        if (arCamera != null && Mathf.Abs(angle) > 80f &&
+            Vector3.Dot(baseRoot.position + dir * d - arCamera.transform.position, away) < 0.5f)
+            dir = Quaternion.Euler(0f, Mathf.Sign(angle) * 80f, 0f) * away;
 
-        float yRot = SpawnYRotations[index % SpawnYRotations.Length];
-        Quaternion rot = Quaternion.Euler(0f, yRot, 0f);
+        Vector3 spawnPosition = baseRoot.position + dir * d;   // baseRoot 貼在地面上
+        // 模型的前進方向是自己的 -X 軸
+        Quaternion rot = Quaternion.LookRotation(-dir, Vector3.up) * Quaternion.Euler(0f, 90f, 0f);
+        SpawnEnemy(type, spawnPosition, rot);
+    }
 
-        GameObject enemy = Instantiate(prefabToSpawn, spawnPosition, rot);
+    /// <summary>在指定位置生成一隻萬年龜並朝神碑前進（測試也用這個擺位）</summary>
+    public EnemyController SpawnEnemy(EnemyType type, Vector3 position, Quaternion rotation)
+    {
+        if (type == null || type.prefab == null || placedObject == null)
+            return null;
+
+        GameObject prefabToSpawn = type.prefab;
+        GameObject enemy = Instantiate(prefabToSpawn, position, rotation);
 
         // 以 prefab 原本的大小為基準縮放，只做小幅變化，種類之間的體型差異才看得出來
         float scaleFactor = Random.Range(minScale, maxScale);
@@ -595,6 +696,8 @@ public class SinglePlacementManager : MonoBehaviour
             controller = enemy.AddComponent<EnemyController>();
 
         controller.Init(placedObject.transform, type.speed * speedMultiplier, type.displayName);
+        controller.AddOccludedSilhouette(occludedSilhouette);
+        return controller;
     }
 
     // ------------------- 回饋 -------------------
@@ -621,7 +724,7 @@ public class SinglePlacementManager : MonoBehaviour
         StopCoroutine(shakeCoroutine);
         shakeCoroutine = null;
         if (placedObject != null)
-            placedObject.transform.position = baseRestPosition;
+            placedObject.transform.localPosition = steleRestLocal;
     }
 
     private IEnumerator ShakeBase(Transform target)
@@ -631,13 +734,13 @@ public class SinglePlacementManager : MonoBehaviour
         {
             float strength = baseShakeAmount * (1f - elapsed / baseShakeDuration);
             Vector2 offset = Random.insideUnitCircle * strength;
-            target.position = baseRestPosition + new Vector3(offset.x, 0f, offset.y);
+            target.localPosition = steleRestLocal + new Vector3(offset.x, 0f, offset.y);
             elapsed += Time.deltaTime;
             yield return null;
         }
 
         if (target != null)
-            target.position = baseRestPosition;
+            target.localPosition = steleRestLocal;
         shakeCoroutine = null;
     }
 
@@ -665,28 +768,10 @@ public class SinglePlacementManager : MonoBehaviour
             target.localScale = finalScale;
     }
 
-    // 神碑正面持續轉向鏡頭
     private void Update()
     {
         if (aura != null)
             aura.transform.Rotate(0f, auraSpinSpeed * Time.deltaTime, 0f, Space.World);
-
-        if (!isPlaced || placedObject == null || arCamera == null)
-            return;
-
-        Vector3 cameraPos = arCamera.transform.position;
-        Vector3 dir = cameraPos - placedObject.transform.position;
-        dir.y = 0f;
-
-        if (dir.sqrMagnitude > 0.0001f)
-        {
-            Quaternion targetRot = Quaternion.LookRotation(-dir, Vector3.up);
-            placedObject.transform.rotation = Quaternion.Slerp(
-                placedObject.transform.rotation,
-                targetRot,
-                Time.deltaTime * 5f
-            );
-        }
     }
 
     /// <summary>移除神碑、回到掃描平面的階段</summary>
@@ -696,18 +781,17 @@ public class SinglePlacementManager : MonoBehaviour
         StopBaseShake();
         ClearEnemies();
 
-        if (placedObject != null)
-            Destroy(placedObject);
+        // 神碑、結界與 ARAnchor 都在 baseRoot 底下，一起刪掉
+        if (baseRoot != null)
+            Destroy(baseRoot.gameObject);
+        baseRoot = null;
         placedObject = null;
-        if (aura != null)
-            Destroy(aura);
         aura = null;
         auraMaterial = null;
 
         isPlaced = false;
         gameRunning = false;
         pendingPlane = null;
-        lastSpawnIndex = -1;
 
         if (arPlaneManager != null)
         {

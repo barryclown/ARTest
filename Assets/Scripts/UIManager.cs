@@ -17,11 +17,13 @@ public class UIManager : MonoBehaviour
     public const string ScanSearching = "慢慢移動手機，掃描周圍的地面";
     public const string ScanFound = "找到地面了，神碑即將降臨…";
     public const string NewEnemyToastFormat = "新的萬年龜：{0}";
+    public const string SideToast = "萬年龜開始從兩側包抄！";
+    public const string SideToastSub = "留意畫面邊緣的箭頭";
     public static readonly string[] RuntimeTextSamples =
     {
         string.Format(StartToastFormat, 60), StartToastSub, string.Format(WarningToastFormat, 10),
         ScanSearching, ScanFound, "擊退 0123456789", "擊退萬年龜　隻 神碑耐久　/ 守護時間　:",
-        string.Format(NewEnemyToastFormat, ""), NonARFallback.NoticeText,
+        string.Format(NewEnemyToastFormat, ""), NonARFallback.NoticeText, SideToast, SideToastSub,
     };
 
     const string Highlight = "#F2C45A";
